@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" suppressHydrationWarning>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QUEEN AI 👑 — Your Royal AI Assistant ✨</title>
+    <meta
+      name="description"
+      content="QUEEN AI — Your Royal AI Assistant. A luxurious purple, pink, white, and gold AI chatbot powered by Google Gemini with voice chat, image understanding, and local history."
+    />
+    <meta property="og:title" content="QUEEN AI 👑 — Your Royal AI Assistant ✨" />
+    <meta
+      property="og:description"
+      content="QUEEN AI — Your Royal AI Assistant powered by Google Gemini with voice chat, image understanding, and persistent local history."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23581C87'/%3E%3Cpath d='M6 22L4.5 11.5L11 15L16 7.5L21 15L27.5 11.5L26 22H6Z' fill='%23FBBF24' stroke='%23FEF08A' stroke-width='1.1' stroke-linejoin='round'/%3E%3Crect x='6' y='22.5' width='20' height='3' rx='1.5' fill='%23D97706'/%3E%3Ccircle cx='16' cy='18' r='1.8' fill='%23EC4899'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem('lumina_theme');
+          if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-[#FDFBFF] dark:bg-[#0D0814] text-slate-900 dark:text-purple-50 antialiased selection:bg-pink-500/20 selection:text-purple-900 dark:selection:text-pink-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "Lumina Chat",
+  "description": "A modern, responsive AI chatbot powered by Google Gemini with full conversation history and local storage persistence.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
