@@ -5,10 +5,10 @@ import {
   GeminiModelId,
 } from "../types/chat";
 
-const CONVERSATIONS_KEY = "lumina_conversations_v1";
-const ACTIVE_CHAT_ID_KEY = "lumina_active_chat_id_v1";
-const SETTINGS_KEY = "lumina_settings_v1";
-const THEME_KEY = "lumina_theme";
+const CONVERSATIONS_KEY = "queen_ai_conversations_v1";
+const ACTIVE_CHAT_ID_KEY = "queen_ai_active_chat_id_v1";
+const SETTINGS_KEY = "queen_ai_settings_v1";
+const THEME_KEY = "queen_ai_theme";
 
 export const DEFAULT_SETTINGS: ChatSettings = {
   theme: "light",

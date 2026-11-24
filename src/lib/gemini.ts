@@ -1,6 +1,9 @@
 import { ChatMessage, GeminiModelId } from "../types/chat";
 import { extractBase64FromDataUrl } from "./images";
 
+const REQUEST_TIMEOUT_MS = 25_000;
+const STREAM_IDLE_TIMEOUT_MS = 30_000;
+
 export interface StreamChatParams {
   messages: Pick<ChatMessage, "role" | "content" | "images">[];
   model: GeminiModelId;
@@ -59,6 +62,50 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function createTimeoutController(
+  externalSignal: AbortSignal | undefined,
+  timeoutMs: number
+): {
+  controller: AbortController;
+  didTimeout: () => boolean;
+  resetTimeout: () => void;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const arm = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+
+  const onExternalAbort = () => {
+    if (timer !== null) clearTimeout(timer);
+    controller.abort();
+  };
+
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+    arm();
+  }
+
+  return {
+    controller,
+    didTimeout: () => timedOut,
+    resetTimeout: arm,
+    cleanup: () => {
+      if (timer !== null) clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    },
+  };
+}
+
 async function performChatRequest(
   messages: Pick<ChatMessage, "role" | "content" | "images">[],
   model: GeminiModelId,
@@ -80,19 +127,53 @@ async function performChatRequest(
   });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream, application/json",
-      },
-      body: JSON.stringify({
-        messages: serializedMessages,
-        model,
-        systemInstruction,
-      }),
-      signal,
-    });
+    const timeoutGuard = createTimeoutController(signal, REQUEST_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream, application/json",
+        },
+        body: JSON.stringify({
+          messages: serializedMessages,
+          model,
+          systemInstruction,
+        }),
+        signal: timeoutGuard.controller.signal,
+      });
+    } catch (err) {
+      timeoutGuard.cleanup();
+      if (signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      if (timeoutGuard.didTimeout()) {
+        if (attempt < maxAttempts) {
+          await sleep(500, signal);
+          continue;
+        }
+        throw new ChatApiError(
+          "The server took too long to respond. Please click Retry.",
+          "REQUEST_TIMEOUT",
+          504
+        );
+      }
+      if (attempt < maxAttempts) {
+        await sleep(600, signal);
+        continue;
+      }
+      throw new ChatApiError(
+        err instanceof Error && err.message
+          ? `Network error: ${err.message}`
+          : "Unable to reach the server. Check your internet connection and try again.",
+        "NETWORK_ERROR",
+        503
+      );
+    }
+
+    timeoutGuard.cleanup();
 
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
     const isTransientProxyOrRestart =
@@ -143,6 +224,26 @@ export async function streamGeminiChat({
         response.status
       );
     }
+    if (parsed && parsed.error && typeof parsed.error === "object") {
+      const nested = parsed.error as Record<string, unknown>;
+      if (typeof nested.message === "string") {
+        const isRouteNotFound = response.status === 404;
+        throw new ChatApiError(
+          isRouteNotFound
+            ? "The /api/chat endpoint was not found on this server (404). Make sure the /api folder and vercel.json are pushed to GitHub and redeployed on Vercel."
+            : nested.message,
+          nested.code !== undefined ? String(nested.code) : "HTTP_ERROR",
+          response.status
+        );
+      }
+    }
+    if (response.status === 404) {
+      throw new ChatApiError(
+        "The /api/chat endpoint was not found on this server (404). Make sure the /api folder and vercel.json are pushed to GitHub and redeployed on Vercel.",
+        "ROUTE_NOT_FOUND",
+        404
+      );
+    }
     if (isHtmlPayload(rawBody, contentType)) {
       throw new ChatApiError(
         "The server is still starting up or returned an unexpected HTML page. Please refresh the preview or click Retry.",
@@ -190,38 +291,94 @@ export async function streamGeminiChat({
   const decoder = new TextDecoder();
   let buffer = "";
   let accumulated = "";
+  let sawDone = false;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
+  const processEventBlock = (eventBlock: string) => {
+    const lines = eventBlock.split("\n");
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) continue;
 
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
+      const payload = tryParseJson(jsonStr);
+      if (!payload) continue;
 
-    for (const event of events) {
-      const lines = event.split("\n");
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const jsonStr = line.slice(6).trim();
-        if (!jsonStr) continue;
-
-        const payload = tryParseJson(jsonStr);
-        if (!payload) continue;
-
-        if (typeof payload.error === "string") {
-          throw new ChatApiError(
-            payload.error,
-            typeof payload.code === "string" ? payload.code : "STREAM_ERROR",
-            502
-          );
-        }
-        if (typeof payload.text === "string" && payload.text.length > 0) {
-          accumulated += payload.text;
-          onChunk(accumulated, payload.text);
-        }
+      if (typeof payload.error === "string") {
+        throw new ChatApiError(
+          payload.error,
+          typeof payload.code === "string" ? payload.code : "STREAM_ERROR",
+          502
+        );
+      }
+      if (typeof payload.text === "string" && payload.text.length > 0) {
+        accumulated += payload.text;
+        onChunk(accumulated, payload.text);
+      }
+      if (payload.done === true) {
+        sawDone = true;
       }
     }
+  };
+
+  const readChunkWithTimeout = async (): Promise<
+    ReadableStreamReadResult<Uint8Array>
+  > => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            void reader.cancel().catch(() => {});
+            reject(
+              new ChatApiError(
+                "Response paused for too long while streaming. Please click Retry.",
+                "STREAM_TIMEOUT",
+                504
+              )
+            );
+          }, STREAM_IDLE_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  };
+
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+
+      const { value, done } = await readChunkWithTimeout();
+      if (done) {
+        buffer += decoder.decode().replace(/\r\n/g, "\n");
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+
+      for (const eventBlock of events) {
+        processEventBlock(eventBlock);
+      }
+    }
+
+    if (buffer.trim().length > 0) {
+      processEventBlock(buffer);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!accumulated.trim() && !sawDone) {
+    throw new ChatApiError(
+      "The response stream ended unexpectedly before replying. Please click Retry.",
+      "INCOMPLETE_STREAM",
+      502
+    );
   }
 
   return accumulated;
